@@ -1,0 +1,54 @@
+# Large data directories — too big for GitHub
+naip_omni_tiles/
+naip_tiles/
+outputs/
+shapefiles/
+
+# Raster and vector data files
+*.tif
+*.tiff
+*.vrt
+*.img
+*.jp2
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.sbn
+*.sbx
+
+# Compressed files
+*.zip
+*.tar
+*.gz
+*.tar.gz
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+.ipynb_checkpoints/
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*_clipped.tif
+_temp_*.vrt
+
+# Conda environment
+*.conda
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
+scripts/cache/
+scripts/OWM_cache/
+scripts/logs/
+scripts/movies/
+scripts/images/
+scripts/old/
