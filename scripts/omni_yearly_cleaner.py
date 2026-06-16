@@ -143,16 +143,30 @@ def download_tile(href, fname, retries=3, wait=5):
 
 def fetch_naip_tiles(aoi, out_dir):
     """Search Planetary Computer for NAIP tiles intersecting the AOI and download them."""
-    search = catalog.search(
-        collections=["naip"],
-        intersects=aoi.__geo_interface__,
-        datetime=NAIP_YEAR_RANGE,
-    )
-    items = list(search.items())
-    print(f"  Found {len(items)} NAIP tiles")
+    # Search year by year to avoid timeout on large date ranges
+    all_items = []
+    for year in range(2003, 2026):
+        for attempt in range(1, 4):
+            try:
+                search = catalog.search(
+                    collections=["naip"],
+                    intersects=aoi.__geo_interface__,
+                    datetime=f"{year}-01-01/{year}-12-31",
+                )
+                items = list(search.items())
+                all_items.extend(items)
+                print(f"  {year}: found {len(items)} tiles")
+                break
+            except Exception as e:
+                print(f"  {year} attempt {attempt} failed: {e}")
+                if attempt == 3:
+                    print(f"  Skipping {year}")
+                time.sleep(30)
+
+    print(f"  Found {len(all_items)} NAIP tiles total")
 
     tile_paths = []
-    for item in items:
+    for item in all_items:
         fname = out_dir / f"{item.id}.tif"
 
         if fname.exists() and not FORCE_REDOWNLOAD:
@@ -177,7 +191,6 @@ def fetch_naip_tiles(aoi, out_dir):
             print(f"  WARNING: {fname.name} failed after all retries, skipping.")
 
     return tile_paths
-
 
 def clip_tile_to_aoi(tif_path, aoi):
     """
