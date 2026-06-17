@@ -23,4 +23,4 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate omni_env
 
 # Run script
-python omni_yearly_cleaner.py
+python omni_yearly_cleaner_aws.py
