@@ -15,7 +15,7 @@
 export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 
-#run nvidia smu 
+#run nvidia smu
 nvidia-smi
 
 # Activate conda
@@ -23,4 +23,4 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate omni_env
 
 # Run script
-python -u omni_yearly_cleaner.py
+python omni_yearly_cleaner_aws.py

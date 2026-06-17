@@ -59,7 +59,7 @@ FORCE_REDOWNLOAD = False
 
 # Morphological closing radius (pixels) — joins nearby water patches and fills
 # thin gaps. Higher = more aggressive joining. Start at 3.
-CLOSING_RADIUS = 3
+CLOSING_RADIUS = 8
 
 # Morphological opening radius (pixels) — removes thin protrusions and speckle
 # at patch edges, including bank sediment fringe. Higher = more edge trimming.
