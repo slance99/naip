@@ -5,7 +5,7 @@
 #SBATCH --mem=128G
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --job-name=american_naip
+#SBATCH --job-name=trin_naip
 #SBATCH --mail-type=END
 #SBATCH --mail-user=slance@ucsb.edu
 #SBATCH --chdir=/home/geomorph/california_rivers/naip/scripts
@@ -23,4 +23,4 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate omni_env
 
 # Run script
-python omni_yearly_cleaner_aws.py
+python omni_yearly_cleaner_v2.py
