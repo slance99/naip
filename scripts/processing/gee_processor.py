@@ -1,14 +1,17 @@
 # =============================================================================
-# naip_watermask_owm.py
+# naip_watermask_gee.py
 #
-# Downloads NAIP imagery from Microsoft Planetary Computer for a set of
-# GeoPackage AOIs and generates water masks using OmniWaterMask.
+# Downloads NAIP imagery from Google Earth Engine for a set of GeoPackage AOIs
+# and generates water masks using OmniWaterMask.
+#
+# Large AOIs are automatically split into a grid of sub-tiles to stay under
+# GEE's direct download size limit, then mosaicked back together locally.
+# No Google Drive or Cloud Storage needed.
 #
 # Install:
-#   conda create -n owm python=3.12
-#   conda activate owm
-#   conda install -c conda-forge gdal rasterio geopandas fiona shapely numpy requests scikit-image
-#   pip install pystac-client planetary-computer omniwatermask
+#   conda activate omni_env
+#   pip install earthengine-api
+#   earthengine authenticate   # only needed once
 # =============================================================================
 
 from pathlib import Path
@@ -19,11 +22,10 @@ import fiona
 import rasterio
 from rasterio.mask import mask as rio_mask
 from shapely.geometry import mapping, box
-from pystac_client import Client
-import planetary_computer
 import requests
 import subprocess
 import numpy as np
+import ee
 from omniwatermask import make_water_mask
 from scipy.ndimage import binary_fill_holes
 from skimage.morphology import closing, opening, disk, remove_small_objects
@@ -34,17 +36,24 @@ from skimage.measure import label, regionprops
 # Setup Conditions - set by user when needed
 # =============================================================================
 
-GPKG_DIR   = Path("/home/geomorph/california_rivers/naip/gpkgs/am_gpkgs/")
-NAIP_DIR   = Path("/home/geomorph/california_rivers/naip/naip_omni_tiles/am")
-OUTPUT_DIR = Path("/home/geomorph/california_rivers/naip/outputs/am_outputs/")
+GPKG_DIR   = Path("/home/geomorph/california_rivers/naip/gpkgs/all/smith_gpkgs/")
+NAIP_DIR   = Path("/home/geomorph/california_rivers/naip/naip_omni_tiles/smith")
+OUTPUT_DIR = Path("/home/geomorph/california_rivers/naip/outputs/smith_outputs/")
 
-NAIP_YEAR_RANGE = "2003-01-01/2025-12-31"
+GEE_PROJECT = "california-rivers-492000"   # set this to your actual GEE project ID
+
+START_YEAR = 2003
+END_YEAR   = 2025
+
+# Grid size for splitting large AOIs before download — 2 means a 2x2 grid
+# (4 sub-tiles). Increase if you still hit size limit errors.
+GRID_SPLIT = 4
 
 # NAIP band order for OmniWaterMask: R=1, G=2, B=3, NIR=4 (1-based)
 BAND_ORDER = [1, 2, 3, 4]
 
-# Set to None for CPU, "cuda" if you have a GPU on your HPC node
-MOSAIC_DEVICE = "cpu"
+# Set to "cpu" or "cuda"
+MOSAIC_DEVICE = "cuda"
 
 # Buffer in meters if your gpkgs are line features, None if already polygons
 BUFFER_METERS = None
@@ -54,24 +63,13 @@ FORCE_REDOWNLOAD = False
 
 # =============================================================================
 # CLEANING PARAMETERS
-# Tune these to control how aggressively the mask is cleaned after OmniWaterMask.
 # =============================================================================
 
-# Morphological closing radius (pixels) — joins nearby water patches and fills
-# thin gaps. Higher = more aggressive joining. Start at 3.
 CLOSING_RADIUS = 8
-
-# Morphological opening radius (pixels) — removes thin protrusions and speckle
-# at patch edges, including bank sediment fringe. Higher = more edge trimming.
-# This is the primary control for bank sediment. Try 2-4.
 OPENING_RADIUS = 2
-
-# Minimum water patch size in pixels — patches smaller than this are removed.
-# At 0.6m resolution: 500px = 180 sq meters. At 1m: 500px = 500 sq meters.
-MIN_BLOB_SIZE = 500
-
-# Holes smaller than this (pixels) are filled. Larger holes are left open.
-MAX_HOLE_SIZE = 1000
+MIN_BLOB_SIZE  = 500
+MAX_HOLE_SIZE  = 1000
+KEEP_TOP_N     = 3
 
 
 # =============================================================================
@@ -81,10 +79,7 @@ MAX_HOLE_SIZE = 1000
 NAIP_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-catalog = Client.open(
-    "https://planetarycomputer.microsoft.com/api/stac/v1",
-    modifier=planetary_computer.sign_inplace
-)
+ee.Initialize(project=GEE_PROJECT)
 
 
 # =============================================================================
@@ -119,55 +114,149 @@ def verify_tile(fname):
         return False
 
 
-def download_tile(href, fname, retries=3, wait=5):
-    """Download a tile with retry logic, verifying integrity after each attempt."""
+def split_aoi_into_grid(aoi_ee, n_splits=GRID_SPLIT):
+    """
+    Split an AOI into an n_splits x n_splits grid of sub-tiles, each
+    intersected with the original AOI shape. Keeps each sub-download
+    under GEE's direct download size limit.
+    """
+    bounds = aoi_ee.bounds().getInfo()["coordinates"][0]
+    lons = [pt[0] for pt in bounds]
+    lats = [pt[1] for pt in bounds]
+    min_lon, max_lon = min(lons), max(lons)
+    min_lat, max_lat = min(lats), max(lats)
+
+    lon_step = (max_lon - min_lon) / n_splits
+    lat_step = (max_lat - min_lat) / n_splits
+
+    sub_tiles = []
+    for i in range(n_splits):
+        for j in range(n_splits):
+            rect = ee.Geometry.Rectangle([
+                min_lon + i * lon_step,
+                min_lat + j * lat_step,
+                min_lon + (i + 1) * lon_step,
+                min_lat + (j + 1) * lat_step,
+            ])
+            sub_tiles.append(rect.intersection(aoi_ee, ee.ErrorMargin(1)))
+    return sub_tiles
+
+
+def get_naip_for_year(aoi_ee, year):
+    collection = (
+        ee.ImageCollection("USDA/NAIP/DOQQ")
+        .filterBounds(aoi_ee)
+        .filterDate(f"{year}-01-01", f"{year}-12-31")
+    )
+    count = collection.size().getInfo()
+    if count == 0:
+        return None, 0
+
+    image = collection.mosaic().clip(aoi_ee)
+    
+    # Check if NIR band exists — skip year if not, since OmniWaterMask needs it
+    available_bands = image.bandNames().getInfo()
+    if "N" not in available_bands:
+        print(f"  {year}: no NIR band available, skipping (bands found: {available_bands})")
+        return None, 0
+    
+    return image, count
+
+def download_single_image(image, region_ee, out_path, scale=0.6, retries=3, wait=5):
     for attempt in range(1, retries + 1):
         try:
-            r = requests.get(href, stream=True, timeout=60)
+            url = image.getDownloadURL({
+                "scale": scale,
+                "crs": "EPSG:4326",
+                "region": region_ee,
+                "format": "GEO_TIFF",
+                "bands": ["R", "G", "B", "N"],
+            })
+            r = requests.get(url, stream=True, timeout=300)
             r.raise_for_status()
-            with open(fname, "wb") as f:
+
+            with open(out_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-            if verify_tile(fname):
+
+            if verify_tile(out_path):
                 return True
             else:
-                print(f"  Attempt {attempt}: {fname.name} failed verification, retrying...")
-                fname.unlink()
+                out_path.unlink(missing_ok=True)
+
         except Exception as e:
-            print(f"  Attempt {attempt}: {fname.name} error: {e}")
-            if fname.exists():
-                fname.unlink()
+            error_str = str(e).lower()
+            print(f"    Attempt {attempt}: {e}")
+            if out_path.exists():
+                out_path.unlink()
+            # Recognize size-limit errors and bail immediately — no point retrying
+            if "must be less than" in error_str or "too large" in error_str or "limit" in error_str:
+                return False
         time.sleep(wait)
+
     return False
 
+def download_naip_image_tiled(image, aoi_ee, out_path, year, temp_dir,
+                                scale=0.6, n_splits=GRID_SPLIT):
+    """
+    Download a NAIP image for one year, automatically splitting into a
+    grid of sub-tiles if the AOI is too large for a single direct download.
+    Sub-tiles are mosaicked back together into out_path using GDAL.
+    """
+    # Try the whole AOI as a single direct download first
+    print(f"    Trying direct download...")
+    if download_single_image(image, aoi_ee, out_path, scale=scale):
+        return True
 
-def fetch_naip_tiles(aoi, out_dir):
-    """Search Planetary Computer for NAIP tiles intersecting the AOI and download them."""
-    # Search year by year to avoid timeout on large date ranges
-    all_items = []
-    for year in range(2003, 2026):
-        for attempt in range(1, 4):
-            try:
-                search = catalog.search(
-                    collections=["naip"],
-                    intersects=aoi.__geo_interface__,
-                    datetime=f"{year}-01-01/{year}-12-31",
-                )
-                items = list(search.items())
-                all_items.extend(items)
-                print(f"  {year}: found {len(items)} tiles")
-                break
-            except Exception as e:
-                print(f"  {year} attempt {attempt} failed: {e}")
-                if attempt == 3:
-                    print(f"  Skipping {year}")
-                time.sleep(30)
+    # Fall back to grid splitting
+    print(f"    Direct download too large, splitting into {n_splits}x{n_splits} grid...")
+    sub_tiles = split_aoi_into_grid(aoi_ee, n_splits=n_splits)
 
-    print(f"  Found {len(all_items)} NAIP tiles total")
+    sub_paths = []
+    for idx, sub_tile in enumerate(sub_tiles):
+        sub_path = temp_dir / f"_temp_{year}_sub{idx}.tif"
+        print(f"    Downloading sub-tile {idx + 1}/{len(sub_tiles)}...")
+        success = download_single_image(image, sub_tile, sub_path, scale=scale)
+        if success:
+            sub_paths.append(sub_path)
+        else:
+            print(f"    WARNING: sub-tile {idx} failed, skipping")
 
+    if not sub_paths:
+        print(f"    WARNING: all sub-tiles failed for {year}")
+        return False
+
+    # Mosaic sub-tiles back together into the final output
+    vrt_path = temp_dir / f"_temp_{year}.vrt"
+    subprocess.run(
+        ["gdalbuildvrt", str(vrt_path), *[str(p) for p in sub_paths]],
+        check=True, capture_output=True
+    )
+    subprocess.run([
+        "gdal_translate", "-of", "GTiff",
+        "-co", "COMPRESS=LZW",
+        "-co", "TILED=YES",
+        str(vrt_path), str(out_path)
+    ], check=True, capture_output=True)
+
+    # Clean up sub-tiles and VRT
+    vrt_path.unlink(missing_ok=True)
+    for sp in sub_paths:
+        sp.unlink(missing_ok=True)
+
+    return verify_tile(out_path)
+
+
+def fetch_naip_tiles_gee(aoi, aoi_ee, out_dir):
+    """
+    Search GEE for NAIP imagery year by year and download each year's
+    mosaic as a single GeoTIFF per year, splitting into a grid if needed.
+    Returns list of downloaded paths.
+    """
     tile_paths = []
-    for item in all_items:
-        fname = out_dir / f"{item.id}.tif"
+
+    for year in range(START_YEAR, END_YEAR + 1):
+        fname = out_dir / f"naip_{year}.tif"
 
         if fname.exists() and not FORCE_REDOWNLOAD:
             if verify_tile(fname):
@@ -181,22 +270,30 @@ def fetch_naip_tiles(aoi, out_dir):
             print(f"  Force re-downloading {fname.name}...")
             fname.unlink()
 
-        print(f"  Downloading {fname.name}...")
-        signed = planetary_computer.sign(item)
-        href = signed.assets["image"].href
+        try:
+            image, count = get_naip_for_year(aoi_ee, year)
+        except Exception as e:
+            print(f"  {year}: GEE search error: {e}")
+            continue
 
-        if download_tile(href, fname):
+        if image is None:
+            continue
+
+        print(f"  {year}: found {count} tiles, downloading...")
+        success = download_naip_image_tiled(image, aoi_ee, fname, year, out_dir)
+
+        if success:
             tile_paths.append(fname)
+            print(f"  Downloaded {fname.name}")
         else:
-            print(f"  WARNING: {fname.name} failed after all retries, skipping.")
+            print(f"  WARNING: {fname.name} failed, skipping.")
 
     return tile_paths
+
 
 def clip_tile_to_aoi(tif_path, aoi):
     """
     Clip a NAIP tile to the AOI and save a temporary clipped version.
-    OmniWaterMask processes whole files, so we clip first to keep things
-    focused on the river corridor and reduce processing time.
     Returns the path to the clipped file, or None if there is no overlap.
     """
     with rasterio.open(tif_path) as src:
@@ -235,50 +332,34 @@ def clean_water_mask(mask,
                      closing_radius=CLOSING_RADIUS,
                      opening_radius=OPENING_RADIUS,
                      min_size=MIN_BLOB_SIZE,
-                     max_hole_size=MAX_HOLE_SIZE):
-    """
-    Spatially clean raw OmniWaterMask output.
-
-    Steps:
-      1. Morphological closing  — joins nearby patches, fills thin gaps
-      2. Remove small objects   — kills isolated speckle and small false positives
-      3. Fill small holes       — fills gaps inside the water mask
-      4. Morphological opening  — trims edge protrusions (bank sediment fringe)
-      5. Keep largest component — removes off-channel water bodies
-    """
+                     max_hole_size=MAX_HOLE_SIZE,
+                     keep_top_n=KEEP_TOP_N):
+    """Spatially clean raw OmniWaterMask output."""
     cleaned = mask.copy()
-
-    # Step 1 — Close small gaps between nearby water pixels
     cleaned = closing(cleaned, footprint=disk(closing_radius))
-
-    # Step 2 — Remove patches smaller than MIN_BLOB_SIZE pixels
     cleaned = remove_small_objects(cleaned, min_size=min_size)
 
-    # Step 3 — Fill holes inside water patches
     filled    = binary_fill_holes(cleaned)
     holes     = filled & ~cleaned
     big_holes = remove_small_objects(holes, min_size=max_hole_size)
     cleaned[holes & ~big_holes] = True
 
-    # Step 4 — Opening trims edge pixels — primary control for bank sediment
     cleaned = opening(cleaned, footprint=disk(opening_radius))
 
-    # Step 5 — Keep only the largest connected water body (the main channel)
-    # Comment this out if your AOI contains multiple disconnected reaches
     labeled = label(cleaned, connectivity=2)
     if labeled.max() == 0:
         print("    WARNING: cleaning removed all water pixels, returning raw mask")
         return mask
-    props   = regionprops(labeled)
-    largest = max(props, key=lambda r: r.area)
-    return (labeled == largest.label)
+
+    props = regionprops(labeled)
+    top_components = sorted(props, key=lambda r: r.area, reverse=True)[:keep_top_n]
+    top_labels = [r.label for r in top_components]
+
+    return np.isin(labeled, top_labels)
 
 
 def apply_cleaning_to_mask_file(mask_path):
-    """
-    Read an OmniWaterMask output GeoTIFF, apply clean_water_mask(),
-    and write the cleaned result back to the same file.
-    """
+    """Read an OmniWaterMask output GeoTIFF, clean it, write back to same file."""
     with rasterio.open(mask_path) as src:
         data = src.read(1).astype(bool)
         meta = src.meta.copy()
@@ -318,20 +399,14 @@ for gpkg in gpkg_files:
     gpkg_naip_dir.mkdir(parents=True, exist_ok=True)
 
     aoi = load_aoi(gpkg)
-    tiles = fetch_naip_tiles(aoi, gpkg_naip_dir)
+    aoi_ee = ee.Geometry(aoi.__geo_interface__)
+
+    tiles = fetch_naip_tiles_gee(aoi, aoi_ee, gpkg_naip_dir)
 
     tiles_by_year = defaultdict(list)
     for tile in tiles:
-        parts = tile.stem.split("_")
-        year = None
-        for part in parts:
-            if len(part) == 8 and part.isdigit():
-                year = part[:4]
-                break
-        if year:
-            tiles_by_year[year].append(tile)
-        else:
-            print(f"  WARNING: could not parse year from {tile.name}, skipping")
+        year = tile.stem.replace("naip_", "")
+        tiles_by_year[year].append(tile)
 
     print(f"  Found tiles for years: {sorted(tiles_by_year.keys())}")
 
@@ -364,7 +439,6 @@ for gpkg in gpkg_files:
                     mosaic_device=MOSAIC_DEVICE,
                 )
                 if result:
-                    # Clean each mask immediately after OmniWaterMask produces it
                     for mask_path in result:
                         print(f"    Cleaning {mask_path.name}...")
                         apply_cleaning_to_mask_file(mask_path)
@@ -376,6 +450,9 @@ for gpkg in gpkg_files:
         if mask_paths:
             mosaic_masks(mask_paths, mosaic_out)
             print(f"  Mosaic -> {mosaic_out}")
+
+            for mp in mask_paths:
+                mp.unlink(missing_ok=True)
         else:
             print(f"  No valid masks for {name} {year}")
 

@@ -5,13 +5,13 @@
 #SBATCH --mem=128G
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --job-name=eel_naip
+#SBATCH --job-name=gee_smith_naip
 #SBATCH --mail-type=END
 #SBATCH --mail-user=slance@ucsb.edu
-#SBATCH --chdir=/home/geomorph/california_rivers/naip/scripts
+#SBATCH --chdir=/home/geomorph/california_rivers/naip/scripts/processing
 #SBATCH --gres=shard:4
-#MOSAIC_DEVICE = "cuda"  # not "cpu"
 
+export MOSAIC_DEVICE="cuda"
 export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 
@@ -23,4 +23,4 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate omni_env
 
 # Run script
-python -u omni_yearly_cleaner.py
+python -u gee_processor.py

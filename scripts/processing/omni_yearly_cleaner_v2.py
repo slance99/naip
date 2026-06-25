@@ -1,14 +1,14 @@
 # =============================================================================
 # naip_watermask_owm.py
 #
-# Downloads NAIP imagery from AWS Earth Search for a set of GeoPackage AOIs
-# and generates water masks using OmniWaterMask.
+# Downloads NAIP imagery from Microsoft Planetary Computer for a set of
+# GeoPackage AOIs and generates water masks using OmniWaterMask.
 #
 # Install:
 #   conda create -n owm python=3.12
 #   conda activate owm
 #   conda install -c conda-forge gdal rasterio geopandas fiona shapely numpy requests scikit-image
-#   pip install pystac-client omniwatermask
+#   pip install pystac-client planetary-computer omniwatermask
 # =============================================================================
 
 from pathlib import Path
@@ -20,6 +20,7 @@ import rasterio
 from rasterio.mask import mask as rio_mask
 from shapely.geometry import mapping, box
 from pystac_client import Client
+import planetary_computer
 import requests
 import subprocess
 import numpy as np
@@ -30,17 +31,19 @@ from skimage.measure import label, regionprops
 
 
 # =============================================================================
-# CONFIG
+# Setup Conditions - set by user when needed
 # =============================================================================
 
-GPKG_DIR   = Path("/home/geomorph/california_rivers/naip/gpkgs/am_gpkgs/")
-NAIP_DIR   = Path("/home/geomorph/california_rivers/naip/naip_omni_tiles/am")
-OUTPUT_DIR = Path("/home/geomorph/california_rivers/naip/outputs/am_outputs/")
+GPKG_DIR   = Path("/home/geomorph/california_rivers/naip/gpkgs/trin_gpkgs/")
+NAIP_DIR   = Path("/home/geomorph/california_rivers/naip/naip_omni_tiles/trin")
+OUTPUT_DIR = Path("/home/geomorph/california_rivers/naip/outputs/trin_outputs/")
+
+NAIP_YEAR_RANGE = "2003-01-01/2025-12-31"
 
 # NAIP band order for OmniWaterMask: R=1, G=2, B=3, NIR=4 (1-based)
 BAND_ORDER = [1, 2, 3, 4]
 
-# Set to "cpu" or "cuda"
+# Set to None for CPU, "cuda" if you have a GPU on your HPC node
 MOSAIC_DEVICE = "cpu"
 
 # Buffer in meters if your gpkgs are line features, None if already polygons
@@ -49,18 +52,26 @@ BUFFER_METERS = None
 # Set to True to re-download tiles even if they already exist on disk
 FORCE_REDOWNLOAD = False
 
-# Years to search — searched one at a time to avoid API timeouts
-START_YEAR = 2003
-END_YEAR   = 2025
-
 # =============================================================================
 # CLEANING PARAMETERS
+# Tune these to control how aggressively the mask is cleaned after OmniWaterMask.
 # =============================================================================
 
-CLOSING_RADIUS = 3
+# Morphological closing radius (pixels) — joins nearby water patches and fills
+# thin gaps. Higher = more aggressive joining. Start at 3.
+CLOSING_RADIUS = 8
+
+# Morphological opening radius (pixels) — removes thin protrusions and speckle
+# at patch edges, including bank sediment fringe. Higher = more edge trimming.
+# This is the primary control for bank sediment. Try 2-4.
 OPENING_RADIUS = 2
-MIN_BLOB_SIZE  = 500
-MAX_HOLE_SIZE  = 1000
+
+# Minimum water patch size in pixels — patches smaller than this are removed.
+# At 0.6m resolution: 500px = 180 sq meters. At 1m: 500px = 500 sq meters.
+MIN_BLOB_SIZE = 500
+
+# Holes smaller than this (pixels) are filled. Larger holes are left open.
+MAX_HOLE_SIZE = 1000
 
 
 # =============================================================================
@@ -70,8 +81,10 @@ MAX_HOLE_SIZE  = 1000
 NAIP_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# AWS Earth Search — no authentication required
-catalog = Client.open("https://earth-search.aws.element84.com/v1")
+catalog = Client.open(
+    "https://planetarycomputer.microsoft.com/api/stac/v1",
+    modifier=planetary_computer.sign_inplace
+)
 
 
 # =============================================================================
@@ -128,25 +141,11 @@ def download_tile(href, fname, retries=3, wait=5):
     return False
 
 
-def s3_to_https(s3_url):
-    """
-    Convert an s3:// URL to the public HTTPS endpoint for AWS Open Data buckets.
-    e.g. s3://naip-analytic/ca/2012/... -> https://naip-analytic.s3.amazonaws.com/ca/2012/...
-    """
-    if s3_url.startswith("s3://"):
-        path = s3_url[len("s3://"):]
-        bucket, key = path.split("/", 1)
-        return f"https://{bucket}.s3.amazonaws.com/{key}"
-    return s3_url
-
 def fetch_naip_tiles(aoi, out_dir):
-    """
-    Search AWS Earth Search for NAIP tiles intersecting the AOI.
-    Searches year by year to avoid API timeouts.
-    No authentication required.
-    """
+    """Search Planetary Computer for NAIP tiles intersecting the AOI and download them."""
+    # Search year by year to avoid timeout on large date ranges
     all_items = []
-    for year in range(START_YEAR, END_YEAR + 1):
+    for year in range(2003, 2026):
         for attempt in range(1, 4):
             try:
                 search = catalog.search(
@@ -156,8 +155,7 @@ def fetch_naip_tiles(aoi, out_dir):
                 )
                 items = list(search.items())
                 all_items.extend(items)
-                if items:
-                    print(f"  {year}: found {len(items)} tiles")
+                print(f"  {year}: found {len(items)} tiles")
                 break
             except Exception as e:
                 print(f"  {year} attempt {attempt} failed: {e}")
@@ -183,32 +181,16 @@ def fetch_naip_tiles(aoi, out_dir):
             print(f"  Force re-downloading {fname.name}...")
             fname.unlink()
 
-        # AWS Earth Search assets don't need signing
-        # Try common asset keys in order of preference
-
         print(f"  Downloading {fname.name}...")
-        href = None
-        for asset_key in ["image", "visual", "cog", "data"]:
-            if asset_key in item.assets:
-                href = item.assets[asset_key].href
-                break
-
-        if href is None:
-            print(f"  WARNING: no downloadable asset found for {item.id}")
-            print(f"  Available assets: {list(item.assets.keys())}")
-            continue
-
-        # Convert s3:// URLs to https:// since requests can't handle s3://
-        href = s3_to_https(href)
+        signed = planetary_computer.sign(item)
+        href = signed.assets["image"].href
 
         if download_tile(href, fname):
             tile_paths.append(fname)
         else:
             print(f"  WARNING: {fname.name} failed after all retries, skipping.")
 
-
     return tile_paths
-
 
 def clip_tile_to_aoi(tif_path, aoi):
     """
@@ -382,6 +364,7 @@ for gpkg in gpkg_files:
                     mosaic_device=MOSAIC_DEVICE,
                 )
                 if result:
+                    # Clean each mask immediately after OmniWaterMask produces it
                     for mask_path in result:
                         print(f"    Cleaning {mask_path.name}...")
                         apply_cleaning_to_mask_file(mask_path)
@@ -402,3 +385,4 @@ for gpkg in gpkg_files:
     print()
 
 print("All done!")
+
