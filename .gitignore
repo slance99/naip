@@ -3,7 +3,8 @@ naip_omni_tiles/
 naip_tiles/
 outputs/
 shapefiles/
-
+scripts/processing/OWM_cache/
+scripts/processing/cache/
 # Raster and vector data files
 *.tif
 *.tiff
@@ -42,6 +43,9 @@ _temp_*.vrt
 # Conda environment
 *.conda
 *.egg-info/
+
+#other file types
+*.json
 
 # OS files
 .DS_Store

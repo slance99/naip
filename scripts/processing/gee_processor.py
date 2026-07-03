@@ -30,19 +30,23 @@ from omniwatermask import make_water_mask
 from scipy.ndimage import binary_fill_holes
 from skimage.morphology import closing, opening, disk, remove_small_objects
 from skimage.measure import label, regionprops
-
+import builtins 
+import argparse
 
 # =============================================================================
 # Setup Conditions - set by user when needed
 # =============================================================================
+parser = argparse.ArgumentParser()
+parser.add_argument("river", help="River name e.g. mattole, smith, eel")
+args = parser.parse_args()
 
-GPKG_DIR   = Path("/home/geomorph/california_rivers/naip/gpkgs/all/smith_gpkgs/")
-NAIP_DIR   = Path("/home/geomorph/california_rivers/naip/naip_omni_tiles/smith")
-OUTPUT_DIR = Path("/home/geomorph/california_rivers/naip/outputs/smith_outputs/")
+RIVER = args.river
 
-GEE_PROJECT = "california-rivers-492000"   # set this to your actual GEE project ID
+GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{RIVER}_gpkgs/")
+NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/naip_omni_tiles/{RIVER}")
+OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/{RIVER}_outputs/")
 
-START_YEAR = 2003
+START_YEAR = 2009
 END_YEAR   = 2025
 
 # Grid size for splitting large AOIs before download — 2 means a 2x2 grid
@@ -80,6 +84,24 @@ NAIP_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 ee.Initialize(project=GEE_PROJECT)
+
+# =============================================================================
+# SAFE PRINT
+# =============================================================================
+
+_original_print = builtins.print   # this MUST run before safe_print is ever called
+
+def safe_print(*args, **kwargs):
+    """
+    Wraps print() to silently ignore stale file handle errors from NFS
+    hiccups, rather than crashing the entire job over a logging failure.
+    """
+    try:
+        _original_print(*args, **kwargs, flush=True)
+    except OSError:
+        pass
+
+builtins.print = safe_print
 
 
 # =============================================================================
@@ -296,6 +318,8 @@ def clip_tile_to_aoi(tif_path, aoi):
     Clip a NAIP tile to the AOI and save a temporary clipped version.
     Returns the path to the clipped file, or None if there is no overlap.
     """
+    print(f"    AOI is empty: {aoi.is_empty}, bounds: {aoi.bounds}")
+
     with rasterio.open(tif_path) as src:
         tile_crs = src.crs
         aoi_gdf = gpd.GeoDataFrame(geometry=[aoi], crs="EPSG:4326")

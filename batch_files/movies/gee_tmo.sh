@@ -5,7 +5,7 @@
 #SBATCH --mem=256G
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --job-name=smith_overlay
+#SBATCH --job-name=mattole_overlay
 #SBATCH --mail-type=END
 #SBATCH --mail-user=slance@ucsb.edu
 #SBATCH --chdir=/home/geomorph/california_rivers/naip/scripts/movies
@@ -18,4 +18,4 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate omni_env
 
 # Run script
-python -u tile_mask_overlay_v2.py
+python -u gee_tmo.py
