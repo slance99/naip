@@ -43,8 +43,10 @@ args = parser.parse_args()
 RIVER = args.river
 
 GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{RIVER}_gpkgs/")
-NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/naip_omni_tiles/{RIVER}")
-OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/{RIVER}_outputs/")
+NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/gee_naip/{RIVER}")
+OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{RIVER}_outputs/")
+
+GEE_PROJECT = "california-rivers-492000"
 
 START_YEAR = 2009
 END_YEAR   = 2025
