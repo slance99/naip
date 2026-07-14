@@ -71,7 +71,7 @@ FORCE_REDOWNLOAD = False
 # CLEANING PARAMETERS
 # =============================================================================
 
-CLOSING_RADIUS = 8
+CLOSING_RADIUS = 4
 OPENING_RADIUS = 2
 MIN_BLOB_SIZE  = 500
 MAX_HOLE_SIZE  = 1000

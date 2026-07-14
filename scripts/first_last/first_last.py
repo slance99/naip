@@ -118,36 +118,23 @@ def parse_section_from_mask(path):
     return re.sub(r"_\d{4}_mosaic$", "", path.stem)
 
 
-def load_naip_rgb(naip_path, max_pixels=MAX_PIXELS):
+def load_naip_rgb(naip_path):
     """
     Load a GEE NAIP tile as an RGB array normalized to 0-1.
-    Downsamples if the tile exceeds max_pixels to keep memory use reasonable.
     NAIP band order from GEE: R=1, G=2, B=3, N=4
-    Returns the RGB array, its shape, transform, and CRS.
     """
     with rasterio.open(naip_path) as src:
-        h, w = src.height, src.width
-
-        if h * w > max_pixels:
-            scale = (max_pixels / (h * w)) ** 0.5
-            out_h = max(1, int(h * scale))
-            out_w = max(1, int(w * scale))
-            print(f"    Downsampling NAIP from {h}x{w} to {out_h}x{out_w}")
-        else:
-            out_h, out_w = h, w
-
-        out_shape = (out_h, out_w)
-        r = src.read(1, out_shape=out_shape, resampling=RasterioResampling.bilinear)
-        g = src.read(2, out_shape=out_shape, resampling=RasterioResampling.bilinear)
-        b = src.read(3, out_shape=out_shape, resampling=RasterioResampling.bilinear)
+        r = src.read(1)
+        g = src.read(2)
+        b = src.read(3)
         transform = src.transform
         crs = src.crs
         bounds = src.bounds
+        out_shape = (src.height, src.width)
 
     rgb = np.stack([r, g, b], axis=-1).astype(float)
     rgb = np.clip(rgb / 255.0, 0, 1)
     return rgb, out_shape, transform, crs, bounds
-
 
 def load_mask_aligned(mask_path, target_shape, naip_transform, naip_crs):
     """
