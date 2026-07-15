@@ -1,0 +1,12 @@
+I RDB sac_polusa_nwis_peak.txt
+I INFO sac_polusa_nwis_site.txt
+O File sac_polusa.txt
+O Plot Format PNG
+O Plot Position 0
+O ConfInterval 0.9
+Station 11389500
+     PCPT_Thresh 1941 2025 0 1e+20 Default
+     SkewOpt Station
+     LOType MGBT
+     LoThresh 0
+     Urb/Reg YES
