@@ -1,0 +1,2 @@
+"site_no","station_nm","BegYear","EndYear","RecordLength","SkewOption","Mean","StandDev","Skew","AtSiteMean","AtSiteStandDev","AtSiteSkew","AtSiteMSEG","AtSiteMSEG_GagedOnly","RegSkew","RegMSEG","HistPeaks","MGBTPeaks","PILF_Method","PILF_Thresh","PILFs","PILF_0s","WeightOpt","WeightCo","RunTime"
+"11389500","SACRAMENTO R A COLUSA CA",1941,2025,85,"Station",4.6005,0.0736,-0.613,4.6005,0.0736,-0.613,0.0985,0.0985,0,-1e+99,0,85,"MGBT",35200,18,0,"HWN",0.3143,0.1132

@@ -65,9 +65,9 @@ DATA_ROOT = Path("/home/geomorph/california_rivers/naip")
 
 MASK_DIR   = DATA_ROOT / "outputs" / "gee" / OUTPUTS
 NAIP_DIR   = DATA_ROOT / "gee_naip" / RIVER
-OUTPUT_DIR = DATA_ROOT / "outputs" / "comparisons" / OUTPUTS
+OUTPUT_DIR = DATA_ROOT / "outputs" / "comparisons" / f"{OUTPUTS}_orange"
 
-OVERLAY_ALPHA = 0.5
+OVERLAY_ALPHA = 0.3
 DPI           = 150
 
 
@@ -179,7 +179,7 @@ def make_overlay_rgba(first_mask, last_mask, alpha=OVERLAY_ALPHA):
     h, w = first_mask.shape
     overlay = np.zeros((h, w, 4), dtype=np.float32)
 
-    overlay[first_mask & ~last_mask] = [0.0, 0.5, 1.0, alpha]
+    overlay[first_mask & ~last_mask] = [1.0, 0.5, 0.0, alpha]
     overlay[~first_mask & last_mask] = [1.0, 0.1, 0.7, alpha]
     overlay[first_mask & last_mask]  = [1.0, 1.0, 1.0, alpha]
 
@@ -249,7 +249,7 @@ def save_overlay_image(naip_rgb, overlay, stats, bounds,
         spine.set_edgecolor("white")
 
     legend_elements = [
-        Patch(facecolor=[0.0, 0.5, 1.0], alpha=OVERLAY_ALPHA,
+        Patch(facecolor=[1.0, 0.5, 0.0], alpha=OVERLAY_ALPHA,
               label=f"Water lost by {last_year} ({stats['lost']:,} px)"),
         Patch(facecolor=[1.0, 0.1, 0.7], alpha=OVERLAY_ALPHA,
               label=f"Water gained by {last_year} ({stats['gained']:,} px)"),

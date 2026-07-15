@@ -1,0 +1,109 @@
+---
+title: "Loading PeakFQR Shiny App"
+format: html
+editor: visual
+---
+
+## Data Sources:
+- USGS National Water Information System (NWIS) PeakFQR data: https://nwis.waterdata.usgs.gov/usa/nwis/peakfq 
+- USGS Gauge Data
+
+```{r}
+
+library(tidyverse)
+library(janitor)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(kableExtra)
+```
+
+## Peak FQR Data
+
+### Loading Necessary Packags 
+```{r}
+#COMMENTING OUT ONCE RUN
+#NOTE: had to install fortran using the following code to run this
+  #Step 1: curl -L https://mac.r-project.org/tools/gfortran-12.2-universal.pkg -o ~/gfortran-12.2-universal.pkg
+  #Step 2: sudo installer -pkg ~/gfortran-12.2-universal.pkg -target /
+
+
+#Install Packages from USGS Source
+# install.packages("remotes")
+# remotes::install_gitlab("water/peakfqr",
+#                         host = "code.usgs.gov",
+#                         dependencies = TRUE,
+#                         INSTALL_opts = "--no-multiarch",
+#                         build_opts = c("--no-resave-data", "--no-manual"))
+
+```
+
+### Run Shiny App
+
+Run this code to load up a Shiny app to query data on flow exceedences
+-   Site: enter site number from USGS (ex. 11389500)
+-   Skew Option: click on box and select station
+-   Urban + Regulated Peaks: select these as allowed
+-   This Analysis: for the initial analysis used 0.6667 and 0.5 
+
+```{r}
+#Run to Open the Shiny App
+library(peakfq)
+peakfq_app()
+```
+
+## Gauge Data 
+
+### Loading Necessary Packages 
+
+```{r}
+# Check version
+library(dataRetrieval)
+packageVersion("dataRetrieval")
+
+```
+
+
+### Reading in Gauge Data for Single Site
+
+```{r}
+
+#Using Older Version 
+#Issue with dataRetrieval, sort out later
+polusa <- readNWISdv(
+  siteNumbers = "11389500",     # your site number here
+  parameterCd = "00060",        # discharge, cfs 
+  startDate   = "1941-01-01",   # or whenever you want to start
+  endDate     = "2025-12-31"
+)
+
+#Clean Column Names 
+polusa_clean <- renameNWISColumns(polusa) |>
+  clean_names() |>
+  rename(dis_cfs = flow) |>
+  mutate(dis_m3s = dis_cfs * 0.0283168) 
+  
+```
+
+### Select Dates that Match Exceedence Values
+
+```{r}
+#Using Exceedences From Shiny App, Finding Years that Match 
+#Simplified to 3 significant figures, otherwise had no matches 
+
+#Exceedance Probability of 0.6667
+q15_exceedences <- polusa_clean |>
+  filter(dis_cfs == 37600)
+
+#Exceedance Probability of 0.5
+q_2_exceedences <- polusa_clean |>
+  filter(dis_cfs == 40500)
+
+#Create Table for Exceedance Years 
+kable(q15_exceedences) |>
+  kable_styling(font_size = 20)
+kable(q_2_exceedences)|>
+  kable_styling(font_size = 20)
+
+```

@@ -1,0 +1,168 @@
+---
+title: "pull_gauge"
+format: html
+editor: visual
+---
+
+#Loading Libraries
+
+```{r}
+
+library(dataRetrieval)
+library(dplyr)
+library(readr)
+
+#update.packages("dataRetrieval")
+packageVersion("dataRetrieval")
+```
+
+# Inputting Knowns
+
+```{r}
+#set site numbers (red bluff and colusa gauges)
+site_numbers <- c("11377100", "11389500")   # Bend Bridge (Red Bluff), Colusa
+
+#parameter code AKA setting that we want discharge 
+parameter_code <- "00060"
+
+#start and end date, to aid in pulling the data
+start_date <- "2000-01-01" #beginning of time 
+end_date <- Sys.Date() #date currently
+
+```
+
+# Downloading Data
+
+## Chunk and Download Data 
+
+```{r}
+#Chunk Out the Data 
+# chunk_starts <- seq(start_year, end_year, by = 5)
+# 
+# date_chunks <- lapply(chunk_starts, function(y) {
+#   c(paste0(y, "-01-01"), paste0(min(y + 4, end_year), "-12-31"))
+# })
+# 
+# # --- Step 3: pull each chunk, for each site, and combine ---------------------
+# 
+# pull_chunk <- function(chunk) {
+#   tryCatch(
+#     read_waterdata_daily(
+#       monitoring_location_id = paste0("USGS-", site_numbers),
+#       parameter_code = parameter_code,
+#       time = chunk
+#     ),
+#     error = function(e) {
+#       message("Skipping ", chunk[1], " to ", chunk[2], ": ", conditionMessage(e))
+#       NULL
+#     }
+#   )
+# }
+# 
+# all_chunks <- map(date_chunks, pull_chunk)
+# daily_data <- bind_rows(all_chunks)
+
+```
+
+## Saving Out Data 
+```{r}
+# daily_data_flat <- daily_data %>% sf::st_drop_geometry()
+# write.csv(daily_data_flat, "usgs_daily_combined.csv", row.names = FALSE)
+# 
+# for (s in site_numbers) {
+#   site_df <- daily_data %>% filter(grepl(s, monitoring_location_id))
+#   write.csv(site_df, paste0("usgs_daily_", s, ".csv"), row.names = FALSE)
+# }
+# 
+# message("Done. Files written to: ", getwd())
+
+```
+# Splitting into Gauges + Cleaning 
+```{r}
+#
+daily_data <- read.csv("usgs_daily_combined.csv")
+
+red_bluff <- daily_data %>%
+  filter(monitoring_location_id == "USGS-11377100") |>
+  mutate(discharge_m3s = value * 0.0283168) |>
+  mutate(date = as.Date(time)) |>
+  mutate(year = as.integer(format(date, "%Y"))) |>
+  select(monitoring_location_id, discharge_m3s, date, year) 
+
+colusa <- daily_data %>%
+  filter(monitoring_location_id == "USGS-11389500") |>
+  mutate(discharge_m3s = value * 0.0283168) |>
+  mutate(date = as.Date(time)) |>
+  mutate(year = as.integer(format(date, "%Y"))) |>
+  select(monitoring_location_id, discharge_m3s, date, year) 
+
+```
+
+# Compute Z-Score
+
+## Red Bluff 
+### Compute Thresholds 
+
+```{r}
+
+#Compute Thresholds 
+
+#95th Percentile and Mean
+red_bluff_z <- red_bluff %>%
+  group_by(year) %>%
+  summarise(
+    p95_q  = quantile(discharge_m3s, 0.95),
+    mean_q = mean(discharge_m3s),
+    .groups = "drop"
+  )
+
+#Flood Duration 
+p90_thr <- quantile(red_bluff$discharge_m3s, 0.90)
+
+flood_dur <- red_bluff %>%
+  group_by(year) %>%
+  summarise(flood_dur = sum(discharge_m3s > p90_thr), .groups = "drop")
+
+red_bluff_z <- red_bluff_z %>% left_join(flood_dur, by = "year")
+
+```
+
+### Build Long-Term Baseline Stats 
+
+```{r}
+metrics   <- c("p95_q", "mean_q", "flood_dur")
+log_shift <- c(0,        0,         1)
+
+baseline <- list()
+for (i in seq_along(metrics)) {
+  m     <- metrics[i]
+  shift <- log_shift[i]
+  vals  <- annual[[m]]
+  safe_vals <- ifelse(vals + shift > 0, vals + shift, NA_real_)
+  lv <- log(safe_vals)
+  baseline[[m]] <- list(
+    mu  = mean(vals),
+    sd  = sd(vals),
+    lmu = mean(lv),
+    lsd = sd(lv)
+  )
+}
+```
+
+### Compute Z-Score by Year 
+
+```{r}
+for (i in seq_along(metrics)) {
+  m     <- metrics[i]
+  shift <- log_shift[i]
+  b <- baseline[[m]]
+
+  annual[[paste0("z_", m)]] <-
+    if (!is.na(b$sd) && b$sd > 0) (annual[[m]] - b$mu) / b$sd else NA_real_
+
+  annual[[paste0("zlog_", m)]] <-
+    if (!is.na(b$lsd) && b$lsd > 0) (log(annual[[m]] + shift) - b$lmu) / b$lsd else NA_real_
+}
+
+```
+
