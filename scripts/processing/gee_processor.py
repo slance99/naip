@@ -36,15 +36,24 @@ import argparse
 # =============================================================================
 # Setup Conditions - set by user when needed
 # =============================================================================
-parser = argparse.ArgumentParser()
-parser.add_argument("river", help="River name e.g. mattole, smith, eel")
+parser.add_argument("river", help="River name e.g. sacramento")
+parser.add_argument("gpkgs", help="GPKG folder name e.g. red_bluff_colusa_gpkgs")
+parser.add_argument(
+    "outputs",
+    nargs="?",
+    default=None,
+    help="Output folder name. Defaults to {gpkgs} with _gpkgs replaced by _outputs"
+)
 args = parser.parse_args()
 
-RIVER = args.river
+RIVER   = args.river
+GPKGS   = args.gpkgs
+OUTPUTS = args.outputs if args.outputs else args.gpkgs.replace("_gpkgs", "_outputs")
 
-GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{RIVER}_gpkgs/")
+GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{GPKGS}/")
 NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/gee_naip/{RIVER}")
-OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{RIVER}_outputs/")
+OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{OUTPUTS}/")
+
 
 GEE_PROJECT = "california-rivers-492000"
 
