@@ -20,4 +20,7 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate omni_env
 
 RIVER=$1
-python -u gee_processor.py $RIVER
+GPKGS=$2
+OUTPUTS=$3
+
+python -u gee_processor.py $RIVER $GPKGS $OUTPUTS
