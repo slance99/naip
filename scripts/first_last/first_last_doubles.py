@@ -305,8 +305,9 @@ for section_name, year_dict in sorted(sections.items()):
         print(f"  Skipping — need at least 2 years, found {len(years)}")
         continue
 
-    first_year = years[0]
-    last_year  = years[-1]
+    first_year = years[0] #pulling first year 
+    last_year  = years[-2] #pulling second to last year (aka 2020 because better discharge alignment for sacramento)
+
     print(f"  Comparing: {first_year} vs {last_year}")
 
     # Output paths for both background versions

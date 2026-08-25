@@ -32,33 +32,32 @@ from skimage.morphology import closing, opening, disk, remove_small_objects
 from skimage.measure import label, regionprops
 import builtins 
 import argparse
+from dateutil import parser
 
 # =============================================================================
 # Setup Conditions - set by user when needed
 # =============================================================================
+
+parser = argparse.ArgumentParser()
 parser.add_argument("river", help="River name e.g. sacramento")
 parser.add_argument("gpkgs", help="GPKG folder name e.g. red_bluff_colusa_gpkgs")
-parser.add_argument(
-    "outputs",
-    nargs="?",
-    default=None,
-    help="Output folder name. Defaults to {gpkgs} with _gpkgs replaced by _outputs"
-)
 args = parser.parse_args()
 
-RIVER   = args.river
-GPKGS   = args.gpkgs
-OUTPUTS = args.outputs if args.outputs else args.gpkgs.replace("_gpkgs", "_outputs")
+RIVER  = args.river
+GPKGS  = args.gpkgs
 
+# Paths — all derived automatically from river and gpkgs arguments
 GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{GPKGS}/")
 NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/gee_naip/{RIVER}")
-OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{OUTPUTS}/")
-
+OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{GPKGS.replace('_gpkgs', '_outputs')}/")
 
 GEE_PROJECT = "california-rivers-492000"
 
 START_YEAR = 2009
-END_YEAR   = 2025
+END_YEAR   = 2026
+
+GEE_PROJECT = "california-rivers-492000"
+
 
 # Grid size for splitting large AOIs before download — 2 means a 2x2 grid
 # (4 sub-tiles). Increase if you still hit size limit errors.
