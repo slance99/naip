@@ -46,6 +46,8 @@ _temp_*.vrt
 
 #other file types
 *.json
+*.png
+*.jpg
 
 # OS files
 .DS_Store

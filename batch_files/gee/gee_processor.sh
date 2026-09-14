@@ -21,4 +21,4 @@ conda activate omni_env
 
 RIVER=$1
 GPKGS=$2
-python -u gee_processor.py $RIVER $GPKGS
+python -u gee_processor.py $RIVER $GPKGS "${@:3}"

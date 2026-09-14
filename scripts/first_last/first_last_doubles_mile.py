@@ -40,6 +40,8 @@ import rasterio
 from rasterio.warp import reproject, Resampling as WarpResampling
 from rasterio.transform import from_bounds
 import geopandas as gpd
+from multiprocessing import Pool, cpu_count
+import multiprocessing
 
 
 # =============================================================================
@@ -82,7 +84,7 @@ DATA_ROOT = Path("/home/geomorph/california_rivers/naip")
 
 MASK_DIR         = DATA_ROOT / "outputs" / "gee" / OUTPUTS
 NAIP_DIR         = DATA_ROOT / "gee_naip" / RIVER
-OUTPUT_DIR       = DATA_ROOT / "outputs" / "comparisons" / f"{OUTPUTS}"
+OUTPUT_DIR       = DATA_ROOT / "outputs" / "comparisons" / "2009_2024"/ f"{OUTPUTS}"
 RIVER_MILES_DIR  = DATA_ROOT / "river_miles"
 RIVER_MILES_SHP  = RIVER_MILES_DIR / "river_mile_markers_sacriver_2012.shp"
 
@@ -98,7 +100,10 @@ LABEL_FONTSIZE    = 10
 LABEL_COLOR       = "white"
 LABEL_OUTLINE     = "black"  # text outline so labels stay legible over any background
 
+#Parallel Processing Workers
+N_WORKERS = 4 
 
+MAX_PIXELS = 20_000_000
 # =============================================================================
 # SETUP
 # =============================================================================
@@ -134,27 +139,85 @@ def parse_section_from_mask(path):
     """Extract section name e.g. sacramento_1_2022_mosaic.tif -> sacramento_1"""
     return re.sub(r"_\d{4}_mosaic$", "", path.stem)
 
+def load_naip_rgb(naip_path, target_crs="EPSG:4326"):
+    """
+    Load a NAIP tile as RGB normalized to 0-1.
+    Reprojects to target_crs if needed so all tiles are in the same CRS.
+    """
+    import rasterio
+    from rasterio.warp import calculate_default_transform, reproject
+    from rasterio.enums import Resampling as RasterioResampling
 
-def load_naip_rgb(naip_path):
-    """
-    Load a GEE NAIP tile as an RGB array normalized to 0-1.
-    No downsampling — loads at full resolution to avoid alignment issues.
-    NAIP band order from GEE: R=1, G=2, B=3, N=4
-    Returns rgb array, shape, transform, crs, and bounds.
-    """
     with rasterio.open(naip_path) as src:
-        r = src.read(1)
-        g = src.read(2)
-        b = src.read(3)
-        transform = src.transform
-        crs       = src.crs
-        bounds    = src.bounds
-        out_shape = (src.height, src.width)
+        # Check if reprojection is needed
+        if src.crs.to_epsg() != int(target_crs.split(":")[1]):
+            print(f"    Reprojecting from {src.crs} to {target_crs}...")
+            transform, width, height = calculate_default_transform(
+                src.crs, target_crs, src.width, src.height, *src.bounds
+            )
+
+            # Check pixel count after reprojection
+            if height * width > MAX_PIXELS:
+                scale = (MAX_PIXELS / (height * width)) ** 0.5
+                height = max(1, int(height * scale))
+                width  = max(1, int(width  * scale))
+                transform, _, _ = calculate_default_transform(
+                    src.crs, target_crs, width, height, *src.bounds
+                )
+                print(f"    Downsampling to {height}x{width}")
+
+            kwargs = src.meta.copy()
+            kwargs.update({
+                "crs":       target_crs,
+                "transform": transform,
+                "width":     width,
+                "height":    height,
+            })
+
+            r = np.zeros((height, width), dtype=np.uint8)
+            g = np.zeros((height, width), dtype=np.uint8)
+            b = np.zeros((height, width), dtype=np.uint8)
+
+            with rasterio.open(naip_path) as src2:
+                reproject(source=src2.read(1), destination=r,
+                          src_transform=src2.transform, src_crs=src2.crs,
+                          dst_transform=transform, dst_crs=target_crs,
+                          resampling=RasterioResampling.bilinear)
+                reproject(source=src2.read(2), destination=g,
+                          src_transform=src2.transform, src_crs=src2.crs,
+                          dst_transform=transform, dst_crs=target_crs,
+                          resampling=RasterioResampling.bilinear)
+                reproject(source=src2.read(3), destination=b,
+                          src_transform=src2.transform, src_crs=src2.crs,
+                          dst_transform=transform, dst_crs=target_crs,
+                          resampling=RasterioResampling.bilinear)
+
+            from rasterio.transform import array_bounds
+            left, bottom, right, top = array_bounds(height, width, transform)
+            from rasterio.crs import CRS
+            crs    = CRS.from_string(target_crs)
+            bounds = rasterio.coords.BoundingBox(left, bottom, right, top)
+
+        else:
+            # Already in target CRS — load normally
+            h, w = src.height, src.width
+            if h * w > MAX_PIXELS:
+                scale = (MAX_PIXELS / (h * w)) ** 0.5
+                h = max(1, int(h * scale))
+                w = max(1, int(w * scale))
+                print(f"    Downsampling to {h}x{w}")
+
+            r = src.read(1, out_shape=(h, w), resampling=RasterioResampling.bilinear)
+            g = src.read(2, out_shape=(h, w), resampling=RasterioResampling.bilinear)
+            b = src.read(3, out_shape=(h, w), resampling=RasterioResampling.bilinear)
+            transform = src.transform
+            crs       = src.crs
+            bounds    = src.bounds
 
     rgb = np.stack([r, g, b], axis=-1).astype(float)
     rgb = np.clip(rgb / 255.0, 0, 1)
+    out_shape = (rgb.shape[0], rgb.shape[1])
     return rgb, out_shape, transform, crs, bounds
-
 
 def load_mask_aligned(mask_path, target_shape, naip_bounds, naip_crs):
     """
@@ -444,6 +507,79 @@ def save_overlay_image(naip_rgb, overlay, stats, bounds,
     plt.close(fig)
     print(f"  Saved -> {output_path.name}")
 
+# Wrap the per-section work into a function
+def process_section(args):
+    """
+    Process a single section — load NAIP, load masks, build overlay, save PNGs.
+    Wrapped as a function so it can be called by multiprocessing.Pool.
+    """
+    section_name, year_dict, naip_section_dir, out_first, out_last, \
+    first_year, last_year = args
+
+    try:
+        # Find NAIP tiles for both years
+        naip_first_path = find_naip_for_year(naip_section_dir, first_year)
+        naip_last_path  = find_naip_for_year(naip_section_dir, last_year)
+
+        if naip_first_path is None:
+            return f"  WARNING: no NAIP tile for {first_year} in {section_name}"
+        if naip_last_path is None:
+            return f"  WARNING: no NAIP tile for {last_year} in {section_name}"
+
+        results = []
+
+        # ── First year background ─────────────────────────────────────────
+        if not out_first.exists():
+            naip_rgb, out_shape, naip_transform, naip_crs, bounds = \
+                load_naip_rgb(naip_first_path)
+
+            first_mask = load_mask_aligned(
+                year_dict[first_year], out_shape, bounds, naip_crs
+            )
+            last_mask = load_mask_aligned(
+                year_dict[last_year], out_shape, bounds, naip_crs
+            )
+
+            overlay, stats = make_overlay_rgba(first_mask, last_mask)
+
+            save_overlay_image(
+                naip_rgb, overlay, stats, bounds,
+                section_name, first_year, last_year,
+                bg_year=first_year, output_path=out_first
+            )
+            del naip_rgb, first_mask, last_mask, overlay
+            results.append(f"  Saved {out_first.name}")
+
+        # ── Last year background ──────────────────────────────────────────
+        if not out_last.exists():
+            naip_rgb, out_shape, naip_transform, naip_crs, bounds = \
+                load_naip_rgb(naip_last_path)
+
+            first_mask = load_mask_aligned(
+                year_dict[first_year], out_shape, bounds, naip_crs
+            )
+            last_mask = load_mask_aligned(
+                year_dict[last_year], out_shape, bounds, naip_crs
+            )
+
+            overlay, stats = make_overlay_rgba(first_mask, last_mask)
+
+            save_overlay_image(
+                naip_rgb, overlay, stats, bounds,
+                section_name, first_year, last_year,
+                bg_year=last_year, output_path=out_last
+            )
+            del naip_rgb, first_mask, last_mask, overlay
+            results.append(f"  Saved {out_last.name}")
+
+        return "\n".join(results) if results else f"  Skipped {section_name} — already exists"
+
+    except Exception as e:
+        import traceback
+        return f"  ERROR on {section_name}: {e}\n{traceback.format_exc()}"
+
+
+
 
 # =============================================================================
 # LOAD RIVER MILE MARKERS (once, in native lat/lon CRS — reprojected per tile)
@@ -460,9 +596,8 @@ else:
     river_miles_gdf = load_river_miles(shp_path, MARKER_COL)
     print(f"  Loaded {len(river_miles_gdf)} markers, source CRS: {river_miles_gdf.crs}\n")
 
-
 # =============================================================================
-# MAIN LOOP
+# MAIN LOOP — parallelized over sections
 # =============================================================================
 
 all_mosaics = sorted(MASK_DIR.glob("*_mosaic.tif"))
@@ -481,100 +616,42 @@ for path in all_mosaics:
 
 print(f"Found {len(sections)} sections\n")
 
+# Build list of arguments for each section
+section_args = []
 for section_name, year_dict in sorted(sections.items()):
-    print(f"{'='*50}")
-    print(f"Processing: {section_name}")
-
     years = sorted(year_dict.keys())
-    print(f"  Available years: {years}")
 
     if len(years) < 2:
-        print(f"  Skipping — need at least 2 years, found {len(years)}")
+        print(f"  Skipping {section_name} — need at least 2 years, found {len(years)}")
         continue
 
-    first_year = years[0] #pulling first year
-    last_year  = years[-2] #pulling second to last year (aka 2020 because better discharge alignment for sacramento)
+    first_year = 2009
+    last_year  = 2024
 
-    print(f"  Comparing: {first_year} vs {last_year}")
-
-    # Output paths for both background versions
     out_first = OUTPUT_DIR / f"{section_name}_{first_year}_vs_{last_year}_bg{first_year}.png"
     out_last  = OUTPUT_DIR / f"{section_name}_{first_year}_vs_{last_year}_bg{last_year}.png"
 
-    # Skip if both already exist
     if out_first.exists() and out_last.exists():
-        print(f"  Skipping — both outputs already exist")
+        print(f"  Skipping {section_name} — both outputs already exist")
         continue
 
     naip_section_dir = NAIP_DIR / section_name
 
-    # Find NAIP tiles for both years
-    naip_first_path = find_naip_for_year(naip_section_dir, first_year)
-    naip_last_path  = find_naip_for_year(naip_section_dir, last_year)
+    section_args.append((
+        section_name, year_dict, naip_section_dir,
+        out_first, out_last, first_year, last_year
+    ))
 
-    if naip_first_path is None:
-        print(f"  WARNING: no NAIP tile for {first_year}, skipping first background")
-    if naip_last_path is None:
-        print(f"  WARNING: no NAIP tile for {last_year}, skipping last background")
-    if naip_first_path is None and naip_last_path is None:
-        print(f"  Skipping — no NAIP tiles found for either year")
-        continue
+print(f"Processing {len(section_args)} sections with {N_WORKERS} workers\n")
 
-    try:
-        # ── First year background ──────────────────────────────────────────
-        if naip_first_path and not out_first.exists():
-            print(f"  Loading NAIP background: naip_{first_year}.tif")
-            naip_rgb, out_shape, naip_transform, naip_crs, bounds = \
-                load_naip_rgb(naip_first_path)
+# Run in parallel
+if section_args:
+    with Pool(processes=N_WORKERS) as pool:
+        results = pool.map(process_section, section_args)
 
-            first_mask = load_mask_aligned(
-                year_dict[first_year], out_shape, bounds, naip_crs
-            )
-            last_mask = load_mask_aligned(
-                year_dict[last_year], out_shape, bounds, naip_crs
-            )
-
-            overlay, stats = make_overlay_rgba(first_mask, last_mask)
-
-            tile_points = points_for_tile(river_miles_gdf, naip_crs, bounds)
-
-            save_overlay_image(
-                naip_rgb, overlay, stats, bounds,
-                section_name, first_year, last_year,
-                bg_year=first_year, output_path=out_first,
-                river_mile_points=tile_points
-            )
-
-            del naip_rgb, first_mask, last_mask, overlay
-
-        # ── Last year background ───────────────────────────────────────────
-        if naip_last_path and not out_last.exists():
-            print(f"  Loading NAIP background: naip_{last_year}.tif")
-            naip_rgb, out_shape, naip_transform, naip_crs, bounds = \
-                load_naip_rgb(naip_last_path)
-
-            first_mask = load_mask_aligned(
-                year_dict[first_year], out_shape, bounds, naip_crs
-            )
-            last_mask = load_mask_aligned(
-                year_dict[last_year], out_shape, bounds, naip_crs
-            )
-
-            overlay, stats = make_overlay_rgba(first_mask, last_mask)
-
-            tile_points = points_for_tile(river_miles_gdf, naip_crs, bounds)
-
-            save_overlay_image(
-                naip_rgb, overlay, stats, bounds,
-                section_name, first_year, last_year,
-                bg_year=last_year, output_path=out_last,
-                river_mile_points=tile_points
-            )
-
-            del naip_rgb, first_mask, last_mask, overlay
-
-    except Exception as e:
-        print(f"  ERROR: {e}")
-        continue
+    # Print results from all workers
+    for result in results:
+        if result:
+            print(result)
 
 print("\nAll done!")

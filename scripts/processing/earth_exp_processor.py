@@ -30,6 +30,7 @@ import geopandas as gpd
 import fiona
 import rasterio
 from rasterio.mask import mask as rio_mask
+from rasterio.warp import transform_bounds
 from shapely.geometry import mapping, box
 import subprocess
 import numpy as np
@@ -39,6 +40,7 @@ from skimage.morphology import closing, opening, disk, remove_small_objects
 from skimage.measure import label, regionprops
 import builtins
 import argparse
+import traceback
 
 
 # =============================================================================
@@ -64,7 +66,7 @@ EARTHEXPLORER_DIR = Path(f"/home/geomorph/california_rivers/naip/earthexplorer/2
 # These match your existing GEE structure exactly
 GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{GPKGS}/")
 NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/gee_naip/{RIVER}")
-OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{GPKGS.replace('_gpkgs', '_outputs')}/")
+OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/red_bluff_colusa_utm/")
 
 # Year being processed
 YEAR = 2024
@@ -80,6 +82,9 @@ BUFFER_METERS = None
 
 # Set to True to reprocess even if outputs already exist
 FORCE_RERUN = False
+
+# Chunk size in pixels for large tiles — 5000x5000 fits in L40S VRAM
+CHUNK_SIZE = 5000
 
 # =============================================================================
 # CLEANING PARAMETERS
@@ -116,14 +121,13 @@ print(f"NAIP output dir:   {NAIP_DIR}")
 print(f"Mask output dir:   {OUTPUT_DIR}")
 print(f"Year:              {YEAR}\n")
 
-for path, label in [
-    (GPKG_DIR,            "GPKG directory"),
-    (EARTHEXPLORER_DIR,   "EarthExplorer tile directory"),
+for check_path, check_label in [
+    (GPKG_DIR,          "GPKG directory"),
+    (EARTHEXPLORER_DIR, "EarthExplorer tile directory"),
 ]:
-    if not path.exists():
-        print(f"ERROR: {label} not found: {path}")
+    if not check_path.exists():
+        print(f"ERROR: {check_label} not found: {check_path}")
         raise SystemExit(1)
-
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -172,8 +176,6 @@ def find_earthexplorer_tiles_for_aoi(aoi, tiles_dir):
     for tile in all_tiles:
         try:
             with rasterio.open(tile) as src:
-                # Reproject tile bounds to WGS84 for comparison with AOI
-                from rasterio.warp import transform_bounds
                 tile_bounds_wgs84 = transform_bounds(
                     src.crs, "EPSG:4326", *src.bounds
                 )
@@ -190,14 +192,11 @@ def mosaic_tiles_to_naip(tile_paths, out_path):
     """
     Mosaic multiple EarthExplorer tiles into a single GeoTIFF named
     naip_{year}.tif to match the GEE naming convention.
-    Uses GDAL for the mosaic.
     """
     if len(tile_paths) == 1:
-        # Only one tile — just copy and rename it
         shutil.copy2(tile_paths[0], out_path)
         print(f"    Copied single tile -> {out_path.name}")
     else:
-        # Multiple tiles — mosaic with GDAL
         vrt_path = out_path.parent / f"_temp_{out_path.stem}.vrt"
         subprocess.run(
             ["gdalbuildvrt", str(vrt_path), *[str(t) for t in tile_paths]],
@@ -282,6 +281,7 @@ def clean_water_mask(mask,
 
 def apply_cleaning_to_mask_file(mask_path):
     """Read an OmniWaterMask output GeoTIFF, clean it, write back to same file."""
+    mask_path = Path(mask_path)  # ensure Path object
     with rasterio.open(mask_path) as src:
         data = src.read(1).astype(bool)
         meta = src.meta.copy()
@@ -292,18 +292,17 @@ def apply_cleaning_to_mask_file(mask_path):
         dst.write(cleaned.astype(np.uint8), 1)
 
 
-def process_large_tile_in_chunks(clipped_path, aoi, band_order, 
-                                   mosaic_device, chunk_size=5000):
+def process_large_tile_in_chunks(clipped_path, band_order,
+                                  mosaic_device, chunk_size=CHUNK_SIZE):
     """
     Split a large clipped tile into smaller chunks, run OmniWaterMask
-    on each chunk separately, then mosaic results back together.
-    chunk_size is in pixels — 5000x5000 should fit in most GPU VRAM.
+    on each chunk separately, then return list of mask paths to mosaic.
+    chunk_size is in pixels — 5000x5000 should fit in L40S GPU VRAM.
     """
     with rasterio.open(clipped_path) as src:
-        h, w = src.height, src.width
-        meta = src.meta.copy()
+        h, w   = src.height, src.width
+        meta   = src.meta.copy()
         transform = src.transform
-        crs = src.crs
 
     print(f"    Tile size: {h}x{w} pixels — splitting into chunks of {chunk_size}")
 
@@ -315,12 +314,15 @@ def process_large_tile_in_chunks(clipped_path, aoi, band_order,
             row_end = min(row_start + chunk_size, h)
             col_end = min(col_start + chunk_size, w)
 
-            chunk_path = clipped_path.parent / f"{clipped_path.stem}_chunk_{chunk_idx}.tif"
+            chunk_path = clipped_path.parent / \
+                         f"{clipped_path.stem}_chunk_{chunk_idx}.tif"
 
             # Write chunk to disk
-            window = rasterio.windows.Window(col_start, row_start,
-                                             col_end - col_start,
-                                             row_end - row_start)
+            window = rasterio.windows.Window(
+                col_start, row_start,
+                col_end - col_start,
+                row_end - row_start
+            )
             chunk_transform = rasterio.windows.transform(window, transform)
 
             with rasterio.open(clipped_path) as src:
@@ -328,8 +330,8 @@ def process_large_tile_in_chunks(clipped_path, aoi, band_order,
 
             chunk_meta = meta.copy()
             chunk_meta.update({
-                "height": chunk_data.shape[1],
-                "width":  chunk_data.shape[2],
+                "height":    chunk_data.shape[1],
+                "width":     chunk_data.shape[2],
                 "transform": chunk_transform,
             })
 
@@ -340,24 +342,28 @@ def process_large_tile_in_chunks(clipped_path, aoi, band_order,
                   f"(rows {row_start}-{row_end}, cols {col_start}-{col_end})...")
 
             try:
+                # Pass paths as strings — OmniWaterMask expects strings not Path objects
                 result = make_water_mask(
-                    scene_paths=[chunk_path],
+                    scene_paths=[str(chunk_path)],
                     band_order=band_order,
                     output_dir=OUTPUT_DIR,
                     mosaic_device=mosaic_device,
                 )
                 if result:
                     for mask_path in result:
-                        apply_cleaning_to_mask_file(mask_path)
-                    chunk_mask_paths.extend(result)
+                        apply_cleaning_to_mask_file(Path(mask_path))
+                    chunk_mask_paths.extend([Path(p) for p in result])
+                    print(f"    Chunk {chunk_idx + 1} complete")
             except Exception as e:
                 print(f"    ERROR on chunk {chunk_idx}: {e}")
+                print(traceback.format_exc())
             finally:
                 chunk_path.unlink(missing_ok=True)
 
             chunk_idx += 1
 
     return chunk_mask_paths
+
 
 def mosaic_masks(mask_paths, out_path):
     """Mosaic per-tile water masks into a single GeoTIFF using GDAL."""
@@ -379,7 +385,6 @@ def mosaic_masks(mask_paths, out_path):
 gpkg_files = sorted(GPKG_DIR.glob("*.gpkg"))
 print(f"Found {len(gpkg_files)} GeoPackages in {GPKG_DIR}\n")
 
-# Find all EarthExplorer tiles upfront
 ee_tiles = [t for t in EARTHEXPLORER_DIR.glob("*.tif")
             if "_clipped" not in t.stem]
 print(f"Found {len(ee_tiles)} EarthExplorer tiles in {EARTHEXPLORER_DIR}\n")
@@ -389,28 +394,23 @@ for gpkg in gpkg_files:
     print(f"{'='*50}")
     print(f"Processing: {name}")
 
-    # Check if mosaic already exists
     mosaic_out = OUTPUT_DIR / f"{name}_{YEAR}_mosaic.tif"
     if mosaic_out.exists() and not FORCE_RERUN:
         print(f"  Skipping {name} {YEAR} — mosaic already exists")
         print()
         continue
 
-    # Load AOI
     aoi = load_aoi(gpkg)
 
-    # Per-section NAIP directory — matches GEE structure
     naip_section_dir = NAIP_DIR / name
     naip_section_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check if renamed naip_2024.tif already exists for this section
     naip_out = naip_section_dir / f"naip_{YEAR}.tif"
 
     if naip_out.exists() and not FORCE_RERUN:
         print(f"  Using existing {naip_out.name}")
         naip_tile = naip_out
     else:
-        # Find EarthExplorer tiles that intersect this section's AOI
         print(f"  Finding EarthExplorer tiles for {name}...")
         matching_tiles = find_earthexplorer_tiles_for_aoi(aoi, EARTHEXPLORER_DIR)
 
@@ -420,8 +420,6 @@ for gpkg in gpkg_files:
             continue
 
         print(f"  Found {len(matching_tiles)} matching tiles")
-
-        # Mosaic tiles and rename to naip_2024.tif convention
         mosaic_tiles_to_naip(matching_tiles, naip_out)
 
         if not verify_tile(naip_out):
@@ -441,38 +439,55 @@ for gpkg in gpkg_files:
         print()
         continue
 
-    # Run OmniWaterMask
-    # Run OmniWaterMask — splits into chunks if tile is too large for GPU
+    # Run OmniWaterMask — split into chunks if tile is too large for GPU VRAM
     print(f"  Running OmniWaterMask...")
     mask_paths = []
+
     try:
         with rasterio.open(clipped) as src:
             h, w = src.height, src.width
 
-        # If tile is large, process in chunks to avoid GPU VRAM overflow
-        # 5000x5000 pixels is roughly 100MB per band which fits in L40S VRAM
-        if h * w > 5000 * 5000:
+        if h * w > CHUNK_SIZE * CHUNK_SIZE:
             print(f"  Tile is large ({h}x{w}) — processing in chunks")
             mask_paths = process_large_tile_in_chunks(
                 clipped_path=clipped,
-                aoi=aoi,
                 band_order=BAND_ORDER,
                 mosaic_device=MOSAIC_DEVICE,
-                chunk_size=5000
+                chunk_size=CHUNK_SIZE
             )
         else:
+            # Small enough to process in one go
             result = make_water_mask(
-                scene_paths=[clipped],
+                scene_paths=[str(clipped)],
                 band_order=BAND_ORDER,
                 output_dir=OUTPUT_DIR,
                 mosaic_device=MOSAIC_DEVICE,
             )
             if result:
                 for mask_path in result:
-                    print(f"    Cleaning {mask_path.name}...")
-                    apply_cleaning_to_mask_file(mask_path)
-                mask_paths.extend(result)
+                    print(f"    Cleaning {Path(mask_path).name}...")
+                    apply_cleaning_to_mask_file(Path(mask_path))
+                mask_paths.extend([Path(p) for p in result])
                 print(f"    Masked and cleaned {clipped.name}")
 
     except Exception as e:
         print(f"    ERROR on {clipped.name}: {e}")
+        print(traceback.format_exc())
+
+    # Clean up clipped temp file
+    clipped.unlink(missing_ok=True)
+
+    # Mosaic masks into final output
+    if mask_paths:
+        mosaic_masks(mask_paths, mosaic_out)
+        print(f"  Mosaic -> {mosaic_out}")
+
+        # Clean up intermediate chunk mask files
+        for mp in mask_paths:
+            mp.unlink(missing_ok=True)
+    else:
+        print(f"  No valid masks for {name} {YEAR}")
+
+    print()
+
+print("All done!")

@@ -1,0 +1,54 @@
+Testing cleaning variants on: sacramento_22
+gpkg: /home/geomorph/california_rivers/naip/gpkgs/all/sacramento_gpkgs/sacramento_22.gpkg
+Found tiles for years: ['2009', '2010', '2012', '2014', '2016', '2018', '2020', '2022', '2024']
+
+==================================================
+Year 2009 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2009_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2009
+==================================================
+Year 2010 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2010_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2010
+==================================================
+Year 2012 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2012_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2012
+==================================================
+Year 2014 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2014_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2014
+==================================================
+Year 2016 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2016_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2016
+==================================================
+Year 2018 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2018_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2018
+==================================================
+Year 2020 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2020_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2020
+==================================================
+Year 2022 (1 tiles)
+    Intersection area: 0.00 sq meters
+    ERROR on naip_2022_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2022
+==================================================
+Year 2024 (1 tiles)
+    Intersection area: 11759466.57 sq meters
+    ERROR on naip_2024_clipped.tif: Found no NVIDIA driver on your system. Please check that you have an NVIDIA GPU and installed a driver from http://www.nvidia.com/Download/index.aspx
+  No valid raw masks for 2024
+Testing run complete. Compare mosaics in:
+  /home/geomorph/california_rivers/naip/testing_zone/baseline
+  /home/geomorph/california_rivers/naip/testing_zone/shape_filter
+  /home/geomorph/california_rivers/naip/testing_zone/skeleton_trim
+  /home/geomorph/california_rivers/naip/testing_zone/shape_filter_skeleton_trim

@@ -34,23 +34,19 @@ import argparse
 
 
 # =============================================================================
-# ARGUMENT PARSING
-# =============================================================================
-
-parser = argparse.ArgumentParser()
-parser.add_argument("river", help="River name e.g. mattole, smith, eel")
-args = parser.parse_args()
-
-RIVER = args.river
-
-
-# =============================================================================
 # CONFIG
 # =============================================================================
+parser = argparse.ArgumentParser()
+parser.add_argument("river", help="River name e.g. sacramento")
+parser.add_argument("gpkgs", help="GPKG folder name e.g. red_bluff_colusa_gpkgs")
+args = parser.parse_args()
 
-GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{RIVER}_gpkgs/")
+RIVER  = args.river
+GPKGS  = args.gpkgs
+
+GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{GPKGS}/")
 NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/gee_naip/{RIVER}")
-OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{RIVER}_outputs/")
+OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/red_bluff_colusa_utm/")
 
 START_YEAR = 2009
 END_YEAR   = 2025
@@ -71,11 +67,11 @@ FORCE_RERUN = True #switching to true 7/13/26 because want to overwrite masks fo
 # CLEANING PARAMETERS
 # =============================================================================
 
-CLOSING_RADIUS = 4
+CLOSING_RADIUS = 2
 OPENING_RADIUS = 2
-MIN_BLOB_SIZE  = 500
+MIN_BLOB_SIZE  = 1000
 MAX_HOLE_SIZE  = 1000
-KEEP_TOP_N     = 3
+KEEP_TOP_N     = 1
 
 
 # =============================================================================

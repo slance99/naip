@@ -33,7 +33,7 @@ from skimage.measure import label, regionprops
 import builtins 
 import argparse
 from dateutil import parser
-
+import re 
 # =============================================================================
 # Setup Conditions - set by user when needed
 # =============================================================================
@@ -41,10 +41,16 @@ from dateutil import parser
 parser = argparse.ArgumentParser()
 parser.add_argument("river", help="River name e.g. sacramento")
 parser.add_argument("gpkgs", help="GPKG folder name e.g. red_bluff_colusa_gpkgs")
+parser.add_argument("--start", type=int, default=None,
+                    help="First section number to process e.g. 20")
+parser.add_argument("--end",   type=int, default=None,
+                    help="Last section number to process e.g. 35")
 args = parser.parse_args()
 
 RIVER  = args.river
 GPKGS  = args.gpkgs
+START_SECTION = args.start
+END_SECTION   = args.end
 
 # Paths — all derived automatically from river and gpkgs arguments
 GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{GPKGS}/")
@@ -79,11 +85,11 @@ FORCE_REDOWNLOAD = False
 # CLEANING PARAMETERS
 # =============================================================================
 
-CLOSING_RADIUS = 4
+CLOSING_RADIUS = 2
 OPENING_RADIUS = 2
-MIN_BLOB_SIZE  = 500
+MIN_BLOB_SIZE  = 1000
 MAX_HOLE_SIZE  = 1000
-KEEP_TOP_N     = 3
+KEEP_TOP_N     = 1
 
 
 # =============================================================================
@@ -199,7 +205,7 @@ def download_single_image(image, region_ee, out_path, scale=0.6, retries=3, wait
         try:
             url = image.getDownloadURL({
                 "scale": scale,
-                "crs": "EPSG:4326",
+                "crs": "EPSG:26910",
                 "region": region_ee,
                 "format": "GEO_TIFF",
                 "bands": ["R", "G", "B", "N"],
@@ -422,6 +428,21 @@ def mosaic_masks(mask_paths, out_path):
 # =============================================================================
 
 gpkg_files = sorted(GPKG_DIR.glob("*.gpkg"))
+
+# Filter to requested section range if specified
+if START_SECTION is not None or END_SECTION is not None:
+    def get_section_num(p):
+        match = re.search(r"_(\d+)$", p.stem)
+        return int(match.group(1)) if match else -1
+
+    gpkg_files = [
+        p for p in gpkg_files
+        if (START_SECTION is None or get_section_num(p) >= START_SECTION)
+        and (END_SECTION   is None or get_section_num(p) <= END_SECTION)
+    ]
+    print(f"Filtered to sections {START_SECTION}-{END_SECTION}: "
+          f"{len(gpkg_files)} GPKGs\n")
+
 print(f"Found {len(gpkg_files)} GeoPackages in {GPKG_DIR}\n")
 
 for gpkg in gpkg_files:
