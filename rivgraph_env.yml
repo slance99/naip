@@ -1,4 +1,4 @@
-name: rivgraph
+name: rivgraph_yml
 channels:
   - conda-forge
 dependencies:
