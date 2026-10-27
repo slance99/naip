@@ -6,7 +6,7 @@ import os
 import re
 
 # ============================================================
-# CONFIG — edit these values for each run
+# UPDATED CONFIG
 # ============================================================
 
 # Folder where your river line shapefiles live
@@ -41,9 +41,25 @@ RIVER_NAMES = [
 # Where the {river}_gpkgs folders will be created
 OUTPUT_ROOT = "/home/geomorph/california_rivers/naip/gpkgs/all/"
 
+# Where the reprojected centerlines are saved (kept separate from the
+# segment folders so they don't get picked up by any *.gpkg globbing)
+LINES_OUTPUT_DIR = "/home/geomorph/california_rivers/naip/gpkgs/lines_utm/"
+SAVE_REPROJECTED_LINES = True
+
 SEGMENT_LENGTH_M = 5000   # length of each slice, in meters
-BUFFER_M = 1000            # buffer distance, in meters
-WORKING_CRS = "EPSG:3310" # projected CRS used for slicing/buffering math
+BUFFER_M = 1000           # buffer distance, in meters
+
+# Projected CRS used for slicing/buffering, and the CRS of every output file.
+# EPSG:26910 = NAD83 / UTM zone 10N. Confirm it matches your NAIP with:
+#   gdalsrsinfo -o epsg some_naip_tile.tif
+WORKING_CRS = "EPSG:26910"
+
+# Optional per-river CRS overrides, e.g. if a river's NAIP is in UTM 11N:
+#   CRS_OVERRIDES = {"ventura": "EPSG:26911", "santa_clara": "EPSG:26911"}
+CRS_OVERRIDES = {}
+
+# UTM zone 10 spans 126°W to 120°W
+UTM10_EAST_EDGE_LON = -120.0
 
 
 # ============================================================
@@ -67,19 +83,38 @@ def slice_line(line: LineString, segment_length: float):
     return pieces
 
 
-def process_river(input_path, river_name, output_root=".",
-                   segment_length_m=3000, buffer_m=5000,
-                   working_crs="EPSG:3310"):
+def warn_if_outside_utm10(gdf, river_name):
+    """Print a note if the river extends east of UTM zone 10."""
+    min_lon, _, max_lon, _ = gdf.to_crs("EPSG:4326").total_bounds
+    if max_lon > UTM10_EAST_EDGE_LON:
+        print(f"  NOTE: {river_name} extends to {max_lon:.2f}° longitude, east of "
+              f"UTM zone 10 ({UTM10_EAST_EDGE_LON}°). Check whether its NAIP is in "
+              f"UTM 11N (EPSG:26911) and add a CRS_OVERRIDES entry if so.", flush=True)
+
+
+def process_river(input_path, river_name, output_root,
+                  segment_length_m, buffer_m, working_crs):
     print(f"Reading {input_path} ...", flush=True)
     gdf = gpd.read_file(input_path)
     print(f"Read {len(gdf)} feature(s). Original CRS: {gdf.crs}", flush=True)
 
+    river_name = safe_name(river_name)
+
+    if working_crs.upper() == "EPSG:26910":
+        warn_if_outside_utm10(gdf, river_name)
+
     print(f"Reprojecting to {working_crs} ...", flush=True)
     gdf = gdf.to_crs(working_crs)
 
-    geoms = list(gdf.geometry.values)
+    if SAVE_REPROJECTED_LINES:
+        os.makedirs(LINES_OUTPUT_DIR, exist_ok=True)
+        epsg = gdf.crs.to_epsg()
+        line_out = os.path.join(LINES_OUTPUT_DIR, f"{river_name}_line_{epsg}.gpkg")
+        gdf.to_file(line_out, driver="GPKG")
+        print(f"Saved reprojected centerline to {line_out}", flush=True)
+
     lines = []
-    for geom in geoms:
+    for geom in gdf.geometry.values:
         if isinstance(geom, MultiLineString):
             lines.extend(list(geom.geoms))
         elif isinstance(geom, LineString):
@@ -88,7 +123,6 @@ def process_river(input_path, river_name, output_root=".",
     total_km = sum(l.length for l in lines) / 1000
     print(f"Found {len(lines)} line part(s). Total length: {total_km:.2f} km", flush=True)
 
-    river_name = safe_name(river_name)
     river_folder = os.path.join(output_root, f"{river_name}_gpkgs")
     os.makedirs(river_folder, exist_ok=True)
 
@@ -101,7 +135,10 @@ def process_river(input_path, river_name, output_root=".",
 
     counter = 1
     for piece in all_pieces:
-        buffered = piece.buffer(buffer_m)
+        # Flat caps: each buffer ends square at the cut point instead of
+        # bulging 1 km past it, so neighboring segments meet edge to edge.
+        # (Requires Shapely >= 2.0; on older Shapely use cap_style=2.)
+        buffered = piece.buffer(buffer_m, cap_style="flat")
         out_gdf = gpd.GeoDataFrame(
             {"river": [river_name], "segment": [counter]},
             geometry=[buffered],
@@ -142,7 +179,7 @@ if __name__ == "__main__":
             output_root=OUTPUT_ROOT,
             segment_length_m=SEGMENT_LENGTH_M,
             buffer_m=BUFFER_M,
-            working_crs=WORKING_CRS
+            working_crs=CRS_OVERRIDES.get(river_name, WORKING_CRS)
         )
 
     print("All rivers processed!")

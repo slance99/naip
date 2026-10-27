@@ -5,7 +5,7 @@
 #SBATCH --mem=128G
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --job-name=sac_down
+#SBATCH --job-name=feather_down
 #SBATCH --mail-type=END
 #SBATCH --mail-user=slance@ucsb.edu
 #SBATCH --chdir=/home/geomorph/california_rivers/naip/scripts/processing

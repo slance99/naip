@@ -54,7 +54,7 @@ END_SECTION   = args.end
 
 # Paths — all derived automatically from river and gpkgs arguments
 GPKG_DIR   = Path(f"/home/geomorph/california_rivers/naip/gpkgs/all/{GPKGS}/")
-NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/gee_naip/{RIVER}")
+NAIP_DIR   = Path(f"/home/geomorph/california_rivers/naip/gee_naip/{RIVER}_utm") #added utm to differentiate 9/16/26
 OUTPUT_DIR = Path(f"/home/geomorph/california_rivers/naip/outputs/gee/{GPKGS.replace('_gpkgs', '_outputs')}/")
 
 GEE_PROJECT = "california-rivers-492000"
